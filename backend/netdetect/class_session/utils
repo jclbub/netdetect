@@ -1,0 +1,13 @@
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+
+# Utility to send updates to WebSocket group
+def send_group_update(group_name, message_type):
+    channel_layer = get_channel_layer()
+    async_to_sync(channel_layer.group_send)(
+        group_name,
+        {"type": message_type}
+    )
+
+def send_class_update():
+    send_group_update("class_group", "update")

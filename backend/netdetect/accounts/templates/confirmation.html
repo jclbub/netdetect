@@ -1,0 +1,115 @@
+{% load static %}
+
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Login Screen</title>
+		<style>
+			body {
+				background-color: #2b6fcf;
+				height: 100vh;
+				display: flex;
+				justify-content: center;
+				align-items: center;
+			}
+
+			.container {
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+				background-color: rgba(255, 255, 255, 0.3);
+				padding: 20px;
+				border-radius: 10px;
+				width: 80%;
+				margin-top: 10px;
+			}
+
+			.logo {
+				width: 200px;
+				height: 200px;
+				margin-bottom: 20px;
+			}
+
+			.input-container {
+				background-color: rgba(255, 255, 255, 1);
+				padding: 10px;
+				border-radius: 10px;
+				width: 100%;
+				margin-bottom: 10px;
+			}
+
+			.button-container {
+				background-color: #00bfff;
+				padding: 15px;
+				border-radius: 10px;
+				width: 100%;
+				margin-bottom: 10px;
+			}
+
+			.button-text {
+				font-size: 18px;
+				color: white;
+				text-align: center;
+			}
+
+			.login-text {
+				color: #ffff;
+			}
+
+			.logo-text {
+				color: yellow;
+				padding-bottom: 50px;
+			}
+
+			.header-text {
+				font-size: 24px;
+				font-weight: bold;
+				text-align: center;
+			}
+
+			.message-text {
+				color: black;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="container">
+			<h1 class="logo-text header-text">NetDetect</h1>
+
+			<h2 class="login-text header-text">Account Activation</h2>
+
+			<h2 class="message-text header-text">
+				Hello, {{ first_name }} {{ last_name }}
+			</h2>
+			<p class="message-text header-text">{{ message }}</p>
+		</div>
+
+		<script>
+			document
+				.getElementById("resetPasswordButton")
+				.addEventListener("click", async function () {
+					const email = "{{ email }}"; // Assuming user email is passed to the template context
+					console.log(email);
+					const response = await fetch(
+						"https://{{domain}}/auth/users/reset_password/",
+						{
+							method: "POST",
+							headers: {
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify({ email: email }),
+						}
+					);
+
+					if (response.ok) {
+						alert("Password reset email sent!");
+					} else {
+						alert("There was an error sending the password reset email.");
+					}
+				});
+		</script>
+	</body>
+</html>

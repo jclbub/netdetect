@@ -1,0 +1,136 @@
+{% load static %}
+
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Password Reset</title>
+		<link
+			rel="stylesheet"
+			href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css"
+		/>
+		<style>
+			body {
+				background-color: #2b6fcf;
+				height: 100vh;
+				display: flex;
+				justify-content: center;
+				align-items: center;
+			}
+
+			.container {
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				justify-content: center;
+				background-color: rgba(255, 255, 255, 0.3);
+				padding: 20px;
+				border-radius: 10px;
+				width: 80%;
+				margin-top: 10px;
+			}
+
+			.logo {
+				width: 200px;
+				height: 200px;
+				margin-bottom: 20px;
+			}
+
+			.headerText {
+				font-size: 24px;
+				font-weight: bold;
+				color: black;
+				margin-bottom: 20px;
+			}
+
+			.inputContainer {
+				position: relative;
+				background-color: rgba(255, 255, 255, 1);
+				padding: 10px;
+				border-radius: 10px;
+				margin-bottom: 10px;
+				width: 100%; /* Ensure input containers take full width */
+			}
+
+			.inputContainer input[type="email"] {
+				width: calc(100% - 30px); /* Adjust for eye icon */
+				padding: 10px;
+				border-radius: 10px;
+				border: 1px solid #ccc;
+				background-color: white;
+				outline: none;
+			}
+
+			.buttonContainer {
+				background-color: #00bfff;
+				padding: 15px;
+				border-radius: 10px;
+				margin-bottom: 10px;
+				text-align: center;
+				width: 100%; /* Ensure button takes full width */
+			}
+
+			.buttonText {
+				font-size: 18px;
+				color: white;
+			}
+
+			.logo-text {
+				color: yellow;
+				padding-bottom: 20px;
+			}
+
+			.header-text {
+				font-size: 24px;
+				font-weight: bold;
+				color: yellow;
+				margin-bottom: 20px;
+				text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000,
+					1px 1px 0 #000;
+			}
+
+			.errorMessage {
+				color: white;
+				font-size: 16px;
+				text-align: center;
+				font-weight: bold;
+				background-color: rgba(
+					255,
+					0,
+					0,
+					0.5
+				); /* Red color with transparency */
+				padding: 10px;
+				border-radius: 10px; /* Rounded corners */
+				margin-bottom: 10px; /* Add some margin at the bottom */
+				width: 100%; /* Ensure error message takes full width */
+			}
+		</style>
+	</head>
+	<body>
+		<div class="container">
+			<h1 class="logo-text header-text">NetDetect</h1>
+			<h1 class="headerText">Password Reset</h1>
+
+			<form method="POST">
+				{% csrf_token %} {% if message %}
+				<div class="errorMessage">{{ message }}</div>
+				{% endif %} {% if email_ %}
+				<div class="errorMessage">{{ email_ }}</div>
+				{% endif %} {% if email_re %}
+				<div class="errorMessage">{{ email_re }}</div>
+				{% endif %} {% if token %}
+				<div class="errorMessage">{{ token }}</div>
+				{% endif %}
+				<!-- Error message container -->
+
+				{{ form.email }} {{ form.re_email }}
+
+				<center>
+					<button class="buttonContainer" type="submit">Reset Email</button>
+				</center>
+			</form>
+		</div>
+	</body>
+</html>
