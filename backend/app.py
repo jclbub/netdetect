@@ -7,7 +7,7 @@ import psutil
 import socket
 import requests
 import asyncio
-from get_devices import scan_network, get_local_ip_range
+from get_devices import scan_network, get_local_ip_range, get_all_device_info
 from get_network_status import _run_speedtest, _get_network_info
 
 app = Flask(__name__)
@@ -17,6 +17,8 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 devices_list = []
 network_status_data = {}
 devices_list_lock = Lock()
+last_scan_time = 0
+SCAN_INTERVAL = 10  # seconds
 
 last_received = 0
 last_sent = 0
@@ -216,40 +218,72 @@ def get_bandwidth_usage():
 @app.route("/api/devices", methods=["GET"])
 def get_devices():
     try:
+        current_time = time.time()
         with devices_list_lock:
+            # Check if devices list is empty or too old
+            if not devices_list or (current_time - last_scan_time > SCAN_INTERVAL):
+                # Start a new scan in the background
+                Thread(target=lambda: asyncio.run(perform_scan())).start()
+            
             devices = devices_list.copy()
-        return jsonify({"status": "success", "devices": devices}), 200
+            
+        return jsonify({
+            "status": "success", 
+            "devices": devices,
+            "last_scan": last_scan_time,
+            "scanning": (current_time - last_scan_time > SCAN_INTERVAL)
+        }), 200
     except Exception as e:
+        print(f"Error in get_devices: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-def continuous_scan():
-    print("Starting continuous scan thread...")
+async def perform_scan():
+    """Perform a network scan and update the devices list."""
+    global last_scan_time
+    
+    try:
+        print("Starting network scan...")
+        ip_range = get_local_ip_range()
+        devices = await asyncio.to_thread(get_all_device_info, ip_range)
+        
+        with devices_list_lock:
+            devices_list.clear()
+            devices_list.extend(devices)
+            last_scan_time = time.time()
+        
+        print(f"Scan complete. Found {len(devices)} devices")
+    except Exception as e:
+        print(f"Error in perform_scan: {e}")
+
+
+async def continuous_scan():
+    """Continuously scan the network at regular intervals."""
     while True:
         try:
-            ip_range = get_local_ip_range()
-            devices = scan_network(ip_range)
-            global devices_list
-            with devices_list_lock:
-                devices_list = devices
+            await perform_scan()
         except Exception as e:
-            print(f"Error during scan: {e}")
-        time.sleep(60)
+            print(f"Error in continuous_scan: {e}")
+        
+        await asyncio.sleep(SCAN_INTERVAL)
 
 
 # Main function
 if __name__ == "__main__":
     # Start background threads
-    scan_thread = Thread(target=continuous_scan)
-    scan_thread.daemon = True
-    scan_thread.start()
-
     network_loop = asyncio.new_event_loop()
     network_status_thread = Thread(
         target=start_asyncio_loop, args=(network_loop, continuous_network_status())
     )
     network_status_thread.daemon = True
     network_status_thread.start()
+
+    scan_loop = asyncio.new_event_loop()
+    scan_thread = Thread(
+        target=start_asyncio_loop, args=(scan_loop, continuous_scan())
+    )
+    scan_thread.daemon = True
+    scan_thread.start()
 
     bandwidth_thread = Thread(target=track_bandwidth_usage)
     bandwidth_thread.daemon = True

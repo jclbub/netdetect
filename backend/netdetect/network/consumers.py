@@ -8,93 +8,324 @@ from collections import defaultdict
 from channels.generic.websocket import AsyncWebsocketConsumer
 import requests
 import nmap
+import logging
+import platform
+import sys
+import os
+import aiohttp
 
-device_traffic = defaultdict(int)  # Store traffic per IP
-device_last_seen = defaultdict(float)  # Store last update time per IP
-lock = threading.Lock()
+# Add the parent directory to sys.path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+from get_devices import get_all_device_info, get_local_ip_range
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 
 class NetworkMonitorConsumer(AsyncWebsocketConsumer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.device_traffic = {}
+        self.device_last_seen = {}
+
     async def connect(self):
-        # Accept the WebSocket connection
         await self.accept()
-        # Start monitoring in a separate thread
-        self.monitoring_thread = threading.Thread(target=self.monitor_network)
-        self.monitoring_thread.daemon = True
-        self.monitoring_thread.start()
+        print("Network Monitor WebSocket connected")
+        asyncio.create_task(self.monitor_network())
 
     async def disconnect(self, close_code):
-        # Handle WebSocket disconnection
-        print("WebSocket disconnected:", close_code)
+        print("Network Monitor WebSocket disconnected")
+
+    async def monitor_network(self):
+        """Monitor the network and send data to WebSocket clients."""
+        try:
+            while True:
+                # Get current network devices
+                devices = await asyncio.to_thread(get_all_device_info)
+                
+                for device in devices:
+                    device_type = await self.get_device_type(device)
+                    os_name = await self.get_os_name(device)
+                    await self.send_device_info(device, device_type, os_name)
+                
+                await asyncio.sleep(30)  # Update every 30 seconds
+                
+        except Exception as e:
+            print(f"Error in monitor_network: {e}")
+
+    async def packet_handler(self, packet):
+        """Handle captured packets and update traffic data."""
+        try:
+            if scapy.IP in packet:
+                src_ip = packet[scapy.IP].src
+                dst_ip = packet[scapy.IP].dst
+                
+                # Update traffic counters
+                self.device_traffic.setdefault(src_ip, 0)
+                self.device_traffic.setdefault(dst_ip, 0)
+                self.device_traffic[src_ip] += len(packet)
+                self.device_traffic[dst_ip] += len(packet)
+                
+                # Update last seen time
+                current_time = time.time()
+                self.device_last_seen[src_ip] = current_time
+                self.device_last_seen[dst_ip] = current_time
+                
+                # Send updated stats
+                await self.send_device_stats({
+                    'traffic': self.device_traffic,
+                    'last_seen': self.device_last_seen
+                })
+                
+        except Exception as e:
+            print(f"Error handling packet: {e}")
+
+    async def get_device_type(self, device):
+        """Infer the device type based on hostname and MAC address."""
+        try:
+            ip, mac, hostname = device["ip"], device["mac"], device["hostname"]
+            
+            # Check hostname first
+            if hostname:
+                hostname_lower = hostname.lower()
+                if any(phone in hostname_lower for phone in ["iphone", "android", "phone"]):
+                    return "Mobile Phone"
+                elif any(laptop in hostname_lower for laptop in ["laptop", "macbook", "notebook"]):
+                    return "Laptop"
+                elif any(desktop in hostname_lower for desktop in ["desktop", "pc", "computer"]):
+                    return "Desktop"
+                elif "printer" in hostname_lower:
+                    return "Printer"
+                elif any(router in hostname_lower for router in ["router", "gateway", "ap"]):
+                    return "Router"
+            
+            # Check vendor
+            vendor = await self.get_mac_vendor(mac)
+            vendor_lower = vendor.lower()
+            
+            if any(apple in vendor_lower for apple in ["apple", "macintosh"]):
+                return "Apple Device"
+            elif any(mobile in vendor_lower for mobile in ["samsung", "xiaomi", "huawei", "oppo", "vivo"]):
+                return "Mobile Device"
+            elif any(pc in vendor_lower for pc in ["dell", "hp", "lenovo", "asus", "acer"]):
+                return "Computer"
+            elif any(network in vendor_lower for network in ["cisco", "tp-link", "netgear", "d-link", "ubiquiti"]):
+                return "Network Device"
+            
+            return "Unknown Device"
+            
+        except Exception as e:
+            print(f"Error determining device type: {e}")
+            return "Unknown Device"
+
+    async def get_os_name(self, device):
+        """Retrieve OS name for a device."""
+        try:
+            mac = device["mac"]
+            vendor = await self.get_mac_vendor(mac)
+            
+            if "Apple" in vendor:
+                return "macOS/iOS"
+            elif "Microsoft" in vendor:
+                return "Windows"
+            elif any(android in vendor.lower() for android in ["samsung", "xiaomi", "huawei", "oppo", "vivo"]):
+                return "Android"
+            elif any(linux in vendor.lower() for linux in ["raspberry", "ubuntu", "linux"]):
+                return "Linux"
+            
+            return "Unknown OS"
+            
+        except Exception as e:
+            print(f"Error determining OS: {e}")
+            return "Unknown OS"
+
+    async def get_mac_vendor(self, mac):
+        """Get vendor information for a MAC address."""
+        try:
+            # Use aiohttp for async HTTP requests
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"https://api.macvendors.com/{mac}", timeout=2) as response:
+                    if response.status == 200:
+                        return await response.text()
+            return "Unknown Vendor"
+        except Exception as e:
+            print(f"Error getting vendor: {e}")
+            return "Unknown Vendor"
+
+    async def send_device_info(self, device, device_type, os_name):
+        """Send device information to the WebSocket client."""
+        try:
+            device_info = {
+                "ip": device["ip"],
+                "mac": device["mac"],
+                "hostname": device["hostname"],
+                "deviceType": device_type,
+                "osName": os_name,
+                "lastSeen": self.device_last_seen.get(device["ip"], time.time()),
+                "traffic": self.device_traffic.get(device["ip"], 0)
+            }
+            await self.send(text_data=json.dumps(device_info))
+        except Exception as e:
+            print(f"Error sending device info: {e}")
 
     async def send_device_stats(self, stats):
-        # Send device stats to the WebSocket client
-        await self.send(text_data=json.dumps(stats))
+        """Send device statistics to the WebSocket client."""
+        try:
+            await self.send(text_data=json.dumps({
+                "type": "stats",
+                "data": stats
+            }))
+        except Exception as e:
+            print(f"Error sending stats: {e}")
 
-    def monitor_network(self):
-        """Monitor the network and send data to WebSocket clients."""
-        ip_range = "192.168.3.0/24"
-        interval = 5
-        sniff_thread = threading.Thread(target=lambda: scapy.sniff(prn=self.packet_handler, store=False, promisc=True))
-        sniff_thread.daemon = True
-        sniff_thread.start()
+class NetworkScannerConsumer(AsyncWebsocketConsumer):
+    scanning = False
+    scan_task = None
+    loop = None  # Store the event loop
 
-        while True:
-            time.sleep(interval)
-            devices = scan_network(ip_range)
-            now = time.time()
-            stats = []
+    async def connect(self):
+        await self.accept()
+        self.loop = asyncio.get_event_loop()  # Store the event loop when connecting
+        print("WebSocket connected")
 
-            with lock:
-                for device in devices:
-                    ip, mac, hostname = device["ip"], device["mac"], device["hostname"]
-                    device_type = infer_device_type(hostname, mac)
-                    total_bytes = device_traffic.get(ip, 0)
-                    mbps = (total_bytes * 8) / (1024 * 1024 * interval)
-                    stats.append({
-                        "ip": ip,
-                        "mac": mac,
-                        "hostname": hostname,
-                        "deviceType": device_type,
-                        "totalBytes": total_bytes,
-                        "mbps": round(mbps, 2)
-                    })
-                # Clean up old entries
-                stale_ips = [ip for ip, last_seen in device_last_seen.items() if now - last_seen > interval * 2]
-                for ip in stale_ips:
-                    del device_traffic[ip]
-                    del device_last_seen[ip]
+    async def disconnect(self, close_code):
+        self.stop_scanning()
+        print("WebSocket disconnected")
 
-            # Send stats to WebSocket clients
-            asyncio.run(self.send_device_stats(stats))
+    def stop_scanning(self):
+        if self.scan_task:
+            self.scan_task.cancel()
+            self.scanning = False
+            self.scan_task = None
 
-    def packet_handler(self, packet):
-        """Handle captured packets and update traffic data."""
-        if packet.haslayer("IP"):
-            src_ip = packet["IP"].src
-            dst_ip = packet["IP"].dst
-            packet_size = len(packet)
-            with lock:
-                device_traffic[src_ip] += packet_size
-                device_traffic[dst_ip] += packet_size
-                device_last_seen[src_ip] = time.time()
-                device_last_seen[dst_ip] = time.time()
+    async def receive(self, text_data):
+        try:
+            data = json.loads(text_data)
+            command = data.get('command')
 
+            if command == 'start_scan':
+                if not self.scanning:
+                    self.scanning = True
+                    # Send initial scanning status
+                    await self.send(json.dumps({
+                        'type': 'status',
+                        'status': 'scanning'
+                    }))
+                    # Start scanning in background
+                    self.scan_task = asyncio.create_task(self.real_time_scan())
+            elif command == 'stop_scan':
+                self.stop_scanning()
+                await self.send(json.dumps({
+                    'type': 'status',
+                    'status': 'stopped'
+                }))
 
-def scan_network(ip_range):
+        except Exception as e:
+            print(f"Error processing message: {e}")
+            await self.send(json.dumps({
+                'type': 'error',
+                'error': str(e)
+            }))
+
+    async def real_time_scan(self):
+        """Perform real-time scanning of the network."""
+        try:
+            while self.scanning:
+                # Get the local IP range
+                ip_range = get_local_ip_range()
+                
+                # Create a callback that uses the stored event loop
+                def device_callback(data):
+                    if self.loop and not self.loop.is_closed():
+                        asyncio.run_coroutine_threadsafe(
+                            self.send(json.dumps(data)),
+                            self.loop
+                        )
+                
+                # Run the device scan in a thread pool to avoid blocking
+                devices = await asyncio.to_thread(
+                    get_all_device_info,
+                    ip_range,
+                    device_callback  # Pass the callback for real-time updates
+                )
+                
+                # Send final update with all devices
+                if self.scanning:  # Check if we're still supposed to be scanning
+                    await self.send(json.dumps({
+                        'type': 'devices',
+                        'devices': devices
+                    }))
+                    
+                    # Wait before next scan
+                    await asyncio.sleep(30)  # Scan every 30 seconds
+                
+        except asyncio.CancelledError:
+            print("Scan task cancelled")
+        except Exception as e:
+            print(f"Error during real-time scan: {e}")
+            if self.scanning:
+                await self.send(json.dumps({
+                    'type': 'error',
+                    'error': str(e)
+                }))
+
+async def scan_network(ip_range):
     """Scan the network and return a list of devices with details."""
-    arp_request = scapy.ARP(pdst=ip_range)
-    broadcast = scapy.Ether(dst="ff:ff:ff:ff:ff:ff")
-    arp_request_broadcast = broadcast / arp_request
-    answered_list = scapy.srp(arp_request_broadcast, timeout=1, verbose=False)[0]
-    devices = []
-    for element in answered_list:
-        devices.append({
-            "ip": element[1].psrc,
-            "mac": element[1].hwsrc,
-            "hostname": get_hostname(element[1].psrc)
-        })
-    return devices
-
+    try:
+        print(f"Starting network scan on range: {ip_range}")
+        
+        # Use ARP scanning which is faster and more reliable for local network
+        arp_request = scapy.ARP(pdst=ip_range)
+        broadcast = scapy.Ether(dst="ff:ff:ff:ff:ff:ff")
+        arp_request_broadcast = broadcast / arp_request
+        
+        # Send ARP request and get responses
+        print("Sending ARP requests...")
+        answered_list = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: scapy.srp(arp_request_broadcast, timeout=3, verbose=True)[0]
+        )
+        
+        devices = []
+        print(f"Got {len(answered_list)} responses")
+        
+        for sent, received in answered_list:
+            try:
+                ip_address = received.psrc
+                mac_address = received.hwsrc
+                
+                print(f"Processing device: IP={ip_address}, MAC={mac_address}")
+                
+                # Try to get hostname (with timeout)
+                hostname = "Unknown"
+                try:
+                    hostname = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: socket.gethostbyaddr(ip_address)[0]
+                    )
+                except:
+                    pass
+                
+                device = {
+                    "ip_address": ip_address,
+                    "mac_address": mac_address,
+                    "hostname": hostname,
+                    "vendor": await get_mac_vendor(mac_address),
+                    "device_type": "Unknown",
+                    "os": "Unknown"
+                }
+                
+                print(f"Found device: {device}")
+                devices.append(device)
+                
+            except Exception as e:
+                print(f"Error processing device response: {e}")
+                continue
+        
+        return devices
+        
+    except Exception as e:
+        print(f"Error in network scan: {e}")
+        return []
 
 def get_hostname(ip):
     """Retrieve hostname for an IP address."""
@@ -103,154 +334,22 @@ def get_hostname(ip):
     except socket.herror:
         return "Unknown"
 
-
-def get_mac_vendor(mac):
+async def get_mac_vendor(mac):
     """Fetch vendor information for a MAC address using macvendors.com API."""
     try:
-        response = requests.get(f"https://api.macvendors.com/{mac}", timeout=2)
-        if response.status_code == 200:
-            return response.text
-        elif response.status_code == 429:
-            return "Rate Limited"
-        else:
-            return "Unregistered MAC"
-    except requests.exceptions.RequestException:
-        return "Unregistered MAC"
+        # Use aiohttp for async HTTP requests
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://api.macvendors.com/{mac}", timeout=2) as response:
+                if response.status == 200:
+                    return await response.text()
+        return "Unknown Vendor"
+    except Exception as e:
+        print(f"Error getting vendor: {e}")
+        return "Unknown Vendor"
 
-
-def infer_device_type(hostname, mac):
-    """Infer the device type based on hostname and MAC address."""
-    if hostname:
-        hostname_lower = hostname.lower()
-        if "desktop" in hostname_lower:
-            return "Desktop"
-        elif "laptop" in hostname_lower:
-            return "Laptop"
-        elif "android" in hostname_lower or "oppo" in hostname_lower or "realme" in hostname_lower:
-            return "Phone"
-        elif "iphone" in hostname_lower or "ipad" in hostname_lower:
-            return "Phone"
-        elif "zte" in hostname_lower:
-            return "Router or IoT Device"
-
-    vendor = get_mac_vendor(mac)
-    if "Apple" in vendor:
-        return "Phone or Laptop (Apple)"
-    elif "Samsung" in vendor:
-        return "Phone or Tablet (Samsung)"
-    elif "OPPO" in vendor or "Realme" in vendor:
-        return "Phone"
-    elif "Dell" in vendor or "HP" in vendor or "Lenovo" in vendor:
-        return "Laptop or Desktop"
-    elif "ZTE" in vendor:
-        return "Router or IoT Device"
-    elif "GUANGDONG" in vendor:
-        return "Phone"
-    elif "Xiaomi" in vendor or "Redmi" in vendor:
-        return "Phone or Tablet (Xiaomi)"
-    elif "ASUS" in vendor:
-        return "Laptop or Desktop (ASUS)"
-    elif "Microsoft" in vendor:
-        return "Laptop or Desktop (Microsoft)"
-    elif "Toshiba" in vendor:
-        return "Laptop or Desktop (Toshiba)"
-    elif "Acer" in vendor:
-        return "Laptop or Desktop (Acer)"
-    elif "Huawei" in vendor:
-        return "Phone or Tablet (Huawei)"
-    elif "Sony" in vendor:
-        return "Laptop or Tablet (Sony)"
-    elif "LG" in vendor:
-        return "Phone or Tablet (LG)"
-    elif "Lenovo" in vendor:
-        return "Laptop or Desktop (Lenovo)"
-    elif "Unregistered MAC" in vendor:
-        return "Unregistered Device"  # If MAC address is unregistered
-    # Default to unknown
-    return "Unregistered MAC"
-
-
-class NetworkScannerConsumer(AsyncWebsocketConsumer):
-    async def connect(self):
-        # Accept the WebSocket connection
-        await self.accept()
-        self.scanning = True  # Flag to control the scanning loop
-        self.scan_task = None  # Initialize the scan task variable
-
-        # Start the real-time scan in the background
-        self.scan_task = asyncio.create_task(self.real_time_scan("192.168.1.0/24"))
-
-    async def disconnect(self, close_code):
-        # Stop the real-time scan when the WebSocket disconnects
-        self.scanning = False
-        if self.scan_task:
-            # Cancel the task and wait for it to finish
-            self.scan_task.cancel()
-            try:
-                await self.scan_task
-            except asyncio.CancelledError:
-                pass
-
-    async def receive(self, text_data):
-        # Optionally handle messages from the client
-        data = json.loads(text_data)
-        ip_range = data.get("ip_range", "192.168.3.0/24")
-
-        # Update the scan task with a new IP range
-        self.scanning = False  # Stop the current scan
-        if self.scan_task:
-            self.scan_task.cancel()
-            try:
-                await self.scan_task
-            except asyncio.CancelledError:
-                pass
-        self.scanning = True  # Restart with the new IP range
-        self.scan_task = asyncio.create_task(self.real_time_scan(ip_range))
-
-    async def real_time_scan(self, ip_range):
-        """Perform real-time scanning and send updates to the WebSocket."""
-        nm = nmap.PortScanner()
-        try:
-            while self.scanning:
-                nm.scan(hosts=ip_range, ports="1-1000", arguments="-sS")
-                results = []
-
-                for host in nm.all_hosts():
-                    host_info = {
-                        "host": host,
-                        "hostname": nm[host].hostname(),
-                        "state": nm[host].state(),
-                        "ports": [],
-                        "danger_level": self.evaluate_danger_level(nm, host),
-                    }
-
-                    if "tcp" in nm[host]:
-                        for port, port_info in nm[host]["tcp"].items():
-                            host_info["ports"].append({
-                                "port": port,
-                                "state": port_info["state"],
-                                "service": port_info.get("name", "unknown"),
-                            })
-
-                    results.append(host_info)
-
-                # Send scan results to the WebSocket client
-                await self.send(text_data=json.dumps({"scan_results": results}))
-
-                # Wait for a while before the next scan
-                await asyncio.sleep(10)  # Adjust the interval as needed
-        except asyncio.CancelledError:
-            # Handle the task cancellation gracefully
-            pass
-
-    def evaluate_danger_level(self, nm, host):
-        open_ports = nm[host]['tcp'] if 'tcp' in nm[host] else {}
-        default_ports = [23, 21, 445]  # Commonly attacked ports
-        risky_ports = [port for port in open_ports if port in default_ports]
-
-        if risky_ports:
-            return "High"
-        elif len(open_ports) > 5:
-            return "Medium"
-        else:
-            return "Low"
+def get_local_ip_range():
+    # Get the local IP range dynamically
+    local_ip = socket.gethostbyname(socket.gethostname())
+    ip_parts = local_ip.split(".")[:3]
+    ip_range = f"{'.'.join(ip_parts)}.0/24"
+    return ip_range

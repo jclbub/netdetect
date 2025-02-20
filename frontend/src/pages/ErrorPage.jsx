@@ -10,6 +10,7 @@ const ErrorPage = () => {
       className="py-16 sm:py-20 px-8 sm:px-10 lg:px-24 bg-gradient-to-r from-gray-800 to-gray-900"
     >
       <div className="container mx-auto">
+        
         {/* Title Section */}
         <div className="text-center mb-14">
           <h3 className="text-3xl sm:text-4xl md:text-5xl text-white tracking-wide drop-shadow-lg">

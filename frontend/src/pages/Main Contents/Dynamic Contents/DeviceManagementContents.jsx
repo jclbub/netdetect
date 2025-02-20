@@ -1,192 +1,182 @@
-import React, { useState, useEffect, useCallback, useRef } from "react";
-import axios from "axios";
-import emailjs from "emailjs-com"; // Make sure to install EmailJS via npm or yarn
+import React, { useEffect } from 'react';
 import { useNotifications } from "../../../context/NotificationsContext";
-
-// Reusable TableRow component for consistent table design
-const TableRow = ({ device }) => (
-  <tr className="rounded-sm hover:bg-gray-800 transition-all">
-    <td className="px-4 py-2">
-      {device.hostname || <span className="text-gray-500">Unknown</span>}
-    </td>
-    <td className="px-4 py-2">
-      {device.ip_address || <span className="text-gray-500">Unknown</span>}
-    </td>
-    <td className="px-4 py-2">
-      {device.mac_address || <span className="text-gray-500">Unknown</span>}
-    </td>
-    <td className="px-4 py-2">
-      {device.device_type || <span className="text-gray-500">Unknown</span>}
-    </td>
-    <td className="px-4 py-2">
-      {device.os || <span className="text-gray-500">Unknown</span>}
-    </td>
-  </tr>
-);
+import { useDeviceContext } from '../../../context/DeviceContext';
 
 const DeviceManagementContents = () => {
-  const [state, setState] = useState({
-    devices: [],
-    allDevices: [], // This will store all detected devices
-    loading: true,
-    error: null,
-  });
-  const prevDevicesRef = useRef([]);
-  const notifiedDevicesRef = useRef(new Set()); // To track notified devices by mac_address
   const { addNotification } = useNotifications();
-
-  // Function to send email via EmailJS
-  const sendEmailNotification = (newDevice) => {
-    const templateParams = {
-      to_email: "rendyllcabardo11@gmail.com", // Replace with your email
-      device_ip: newDevice.ip_address,
-      device_mac: newDevice.mac_address,
-      device_hostname: newDevice.hostname || "Unknown",
-      device_type: newDevice.device_type || "Unknown",
-      device_os: newDevice.os || "Unknown",
-    };
-
-    // Check if the device has already been notified
-    if (!notifiedDevicesRef.current.has(newDevice.mac_address)) {
-      // Send email via EmailJS asynchronously
-      // emailjs
-      //   .send(
-      //     import.meta.env.VITE_EMAILJS_SERVICE_ID,
-      //     import.meta.env.VITE_EMAILJS_TEMPLATE_ID2,
-      //     templateParams,
-      //     import.meta.env.VITE_EMAILJS_USER_ID
-      //   )
-      //   .then(
-      //     (response) => {
-      //       console.log("Email sent successfully:", response);
-      //       notifiedDevicesRef.current.add(newDevice.mac_address);
-      //     },
-      //     (error) => {
-      //       console.error("Error sending email:", error);
-      //     }
-      //   );
-    }
-  };
-
-  // Fetch device data
-  const fetchDevices = useCallback(async () => {
-    try {
-      setState((prevState) => ({ ...prevState, error: null }));
-      const response = await axios.get("http://localhost:5000/api/devices");
-      const newDevices = response.data.devices || [];
-
-      // Check for new devices by comparing against the previous list
-      const newDevicesList = newDevices.filter(
-        (newDevice) =>
-          !prevDevicesRef.current.some(
-            (prevDevice) => prevDevice.mac_address === newDevice.mac_address
-          )
-      );
-
-      // For each new device, send an email notification
-      newDevicesList.forEach((newDevice) => {
-        sendEmailNotification(newDevice);
-      });
-
-      // Add new devices to the notifications system
-      newDevicesList.forEach((newDevice) => {
-        addNotification({
-          message: `Detected new device: ${newDevice.hostname || "Unknown"} (${
-            newDevice.ip_address
-          })`,
-          timestamp: new Date().toISOString(),
-        });
-      });
-
-      // Update state: merge new devices into the `allDevices` list
-      setState((prevState) => ({
-        devices: newDevices, // Update with the latest devices detected
-        allDevices: [...prevState.allDevices, ...newDevicesList], // Append new devices to the allDevices list
-        loading: false,
-        error: null,
-      }));
-
-      // Update previous devices reference to current devices
-      prevDevicesRef.current = newDevices;
-    } catch (err) {
-      console.error("Error fetching devices:", err);
-      setState({
-        devices: [],
-        loading: false,
-        error: err?.response?.data?.message || "Failed to fetch devices.",
-      });
-    }
-  }, [addNotification]);
+  const { 
+    devices, 
+    loading, 
+    error, 
+    scanStatus,
+    wsRef,
+    setDevices,
+    setLoading,
+    setError,
+    setScanStatus,
+  } = useDeviceContext();
 
   useEffect(() => {
-    fetchDevices();
-    const intervalId = setInterval(fetchDevices, 60000); // Fetch devices every 60 seconds
+    // Only create a new WebSocket if one doesn't exist
+    if (!wsRef.current) {
+      const ws = new WebSocket('ws://localhost:8000/ws/network-scanner/');
+      wsRef.current = ws;
+      
+      ws.onopen = () => {
+        console.log('WebSocket Connected');
+        setLoading(false);
+        setError(null);
+        
+        // Start scanning when connected
+        ws.send(JSON.stringify({ command: 'start_scan' }));
+      };
 
-    return () => clearInterval(intervalId);
-  }, [fetchDevices]);
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          console.log('Received WebSocket data:', data);
+          
+          // Handle different message types
+          switch (data.type) {
+            case 'status':
+              setScanStatus(data.status);
+              setLoading(data.status === 'scanning');
+              setError(null);
+              break;
+              
+            case 'devices':
+              // Update devices and notify about new ones
+              const oldDevices = new Set(devices.map(d => d.mac_address));
+              const newDevices = data.devices.filter(d => !oldDevices.has(d.mac_address));
+              
+              // Notify about new devices
+              newDevices.forEach(device => {
+                addNotification({
+                  title: 'New Device Detected',
+                  message: `${device.hostname || 'Unknown Device'} (${device.ip_address})`,
+                  type: 'info'
+                });
+              });
+              
+              setDevices(data.devices);
+              setLoading(false);
+              setError(null);
+              break;
+              
+            case 'error':
+              setError(data.error);
+              setLoading(false);
+              addNotification({
+                title: 'Scanning Error',
+                message: data.error,
+                type: 'error'
+              });
+              break;
+              
+            default:
+              console.warn('Unknown message type:', data);
+          }
+        } catch (error) {
+          console.error('Error processing WebSocket message:', error);
+        }
+      };
 
-  const { devices, loading, error, allDevices } = state;
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        setError('Connection error - Make sure the backend server is running');
+        setLoading(false);
+        addNotification({
+          title: 'Connection Error',
+          message: 'Failed to connect to device scanner. Is the backend running?',
+          type: 'error'
+        });
+      };
 
-  if (loading) {
-    return (
-      <div className="text-center mt-6">
-        <p className="text-gray-400 text-center animate-pulse">
-          Loading devices...
-        </p>
-      </div>
-    );
-  }
+      ws.onclose = () => {
+        console.log('WebSocket Disconnected');
+        setError('Connection closed - Attempting to reconnect...');
+        setLoading(false);
+        
+        // Try to reconnect after 5 seconds
+        setTimeout(() => {
+          if (wsRef.current === ws) { // Only reconnect if this is still the current connection
+            wsRef.current = null; // Clear the ref so we can reconnect
+          }
+        }, 5000);
+      };
 
-  if (error) {
-    return (
-      <div className="text-center mt-6">
-        <p className="text-red-500 text-center">
-          {error}. Retrying in 60 seconds...
-        </p>
-      </div>
-    );
-  }
+      // Cleanup on unmount
+      return () => {
+        // Don't actually close the WebSocket when unmounting
+        // This allows it to stay connected when navigating away
+      };
+    }
+  }, []); // Empty dependency array - only run once on mount
 
   return (
-    <div className="bg-transparent p-6">
-      {/* Header Section */}
-      <div className="bg-[#1F2937] shadow-md px-8 py-6 rounded-lg mb-8 max-w-full mx-auto">
-        <p className="text-sm text-gray-400 mt-2">
-          Welcome to your Connected Devices Dashboard! Here, you can view
-          real-time data about all connected devices.
-        </p>
+    <div className="p-4">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-2xl font-bold text-white">Connected Devices</h2>
+        <div className="flex items-center gap-2">
+          {loading && (
+            <div className="flex items-center text-blue-400">
+              <svg className="animate-spin h-5 w-5 mr-2" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+              </svg>
+              Scanning...
+            </div>
+          )}
+          {scanStatus === 'stopped' && (
+            <span className="text-gray-400">Scan stopped</span>
+          )}
+        </div>
       </div>
-      <hr className="mb-6 border-t border-[#444]" />
-      <p className="text-xl font-semibold text-[#00BFFF] mb-4">
-        Devices Connected: {devices.length}
-      </p>
 
-      {/* No devices case */}
-      {devices.length === 0 ? (
-        <p className="text-center text-gray-400">
-          No devices detected. Please try again later.
-        </p>
-      ) : (
-        <div className="overflow-x-auto shadow-xl">
-          {/* Device Table */}
-          <table className="w-full text-center text-xs text-gray-300">
-            <thead>
-              <tr className="border-b border-gray-700">
-                <th className="px-4 py-2">Hostname</th>
-                <th className="px-4 py-2">IP Address</th>
-                <th className="px-4 py-2">MAC Address</th>
-                <th className="px-4 py-2">Device Type</th>
-                <th className="px-4 py-2">OS</th>
-              </tr>
-            </thead>
-            <tbody>
-              {allDevices.map((device, index) => (
-                <TableRow key={index} device={device} />
-              ))}
-            </tbody>
-          </table>
+      {error && (
+        <div className="bg-red-900/50 border border-red-500 text-red-200 p-3 rounded mb-4">
+          {error}
         </div>
       )}
+
+      <div className="bg-gray-900 rounded-lg shadow overflow-hidden">
+        <table className="min-w-full divide-y divide-gray-700">
+          <thead className="bg-gray-800">
+            <tr>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">Hostname</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">IP Address</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">MAC Address</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">Vendor</th>
+              <th className="px-4 py-3 text-left text-sm font-medium text-gray-300">Last Seen</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-700">
+            {devices.length === 0 ? (
+              <tr>
+                <td colSpan="5" className="px-4 py-8 text-center text-gray-400">
+                  {loading ? (
+                    'Scanning for devices...'
+                  ) : (
+                    'No devices found'
+                  )}
+                </td>
+              </tr>
+            ) : (
+              devices.map((device, index) => (
+                <tr key={device.mac_address || index} className="hover:bg-gray-800/50">
+                  <td className="px-4 py-3 text-sm text-gray-300">{device.hostname || 'Unknown'}</td>
+                  <td className="px-4 py-3 text-sm text-gray-300">{device.ip_address}</td>
+                  <td className="px-4 py-3 text-sm text-gray-300">{device.mac_address}</td>
+                  <td className="px-4 py-3 text-sm text-gray-300">{device.vendor || 'Unknown'}</td>
+                  <td className="px-4 py-3 text-sm text-gray-300">
+                    {new Date(device.last_seen * 1000).toLocaleString()}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 };
